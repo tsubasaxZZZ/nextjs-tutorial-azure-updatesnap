@@ -204,26 +204,351 @@ export const config = {
 
 ## 📚 重要な概念
 
-### 動的セグメント
+### 動的ルーティングの詳細な仕組み
 
-- `[slug]`: 単一の動的セグメント
-- `[...slug]`: キャッチオールセグメント
-- `[[...slug]]`: オプショナルキャッチオールセグメント
-
-### Parallel Routes と Intercepting Routes
-
-Next.js 14 の高度な機能：
-- Parallel Routes: 複数のページを同時にレンダリング
-- Intercepting Routes: ルートをインターセプトしてモーダル表示など
-
-### Server Components でのデータフェッチング
+#### 動的セグメントの種類と使い分け
 
 ```tsx
-// 非同期 Server Component
-export default async function Page() {
-  const data = await fetchData(); // 直接 await できる
-  return <div>{data}</div>;
+// 1. [slug] - 単一の動的セグメント
+// app/blog/[slug]/page.tsx
+// マッチ: /blog/hello, /blog/123
+// 非マッチ: /blog/hello/world
+
+export default async function BlogPost({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params;
+  // slug = "hello" または "123"
 }
+
+// 2. [...slug] - キャッチオールセグメント
+// app/docs/[...slug]/page.tsx
+// マッチ: /docs/intro, /docs/guide/setup, /docs/api/v1/users
+// 非マッチ: /docs（空のセグメント）
+
+export default async function DocsPage({ params }: { params: Promise<{ slug: string[] }> }) {
+  const { slug } = await params;
+  // slug = ["intro"] または ["guide", "setup"] または ["api", "v1", "users"]
+}
+
+// 3. [[...slug]] - オプショナルキャッチオールセグメント
+// app/shop/[[...slug]]/page.tsx
+// マッチ: /shop, /shop/category, /shop/category/product
+// すべてのセグメントパターンをキャッチ
+
+export default async function ShopPage({ params }: { params: Promise<{ slug?: string[] }> }) {
+  const { slug } = await params;
+  // slug = undefined または ["category"] または ["category", "product"]
+}
+```
+
+#### パラメータの型安全性とバリデーション
+
+```tsx
+import { z } from 'zod';
+
+// Zod スキーマでバリデーション
+const paramsSchema = z.object({
+  slug: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+    .or(z.string().regex(/^\d+$/))
+});
+
+type Props = {
+  params: Promise<{ slug: string }>;
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+};
+
+export default async function UpdatePage({ params, searchParams }: Props) {
+  const resolvedParams = await params;
+  const resolvedSearchParams = await searchParams;
+  
+  // バリデーション
+  const validationResult = paramsSchema.safeParse(resolvedParams);
+  
+  if (!validationResult.success) {
+    throw new Error('Invalid slug format');
+  }
+  
+  const { slug } = validationResult.data;
+  const debug = resolvedSearchParams.debug === 'true';
+  
+  // 型安全な処理
+  return <div>Valid slug: {slug}</div>;
+}
+```
+
+### Client vs Server Components の境界設計
+
+#### ハイドレーションとインタラクティビティ
+
+```tsx
+// Server Component (デフォルト)
+export default async function UpdatePage({ params }: Props) {
+  const { slug } = await params;
+  
+  // サーバーサイドでデータ取得
+  const updateData = await getUpdateData(slug);
+  
+  return (
+    <div>
+      {/* Server Component のまま - 静的コンテンツ */}
+      <h1>{updateData.title}</h1>
+      <p>{updateData.description}</p>
+      
+      {/* Client Component - インタラクティブな部分のみ */}
+      <InteractiveComments 
+        initialComments={updateData.comments}
+        updateId={slug}
+      />
+      
+      {/* 条件付きで Client Component を使用 */}
+      {!isBot && <RedirectingView targetUrl={updateData.officialUrl} />}
+    </div>
+  );
+}
+
+// Client Component - 必要最小限に限定
+'use client';
+
+function InteractiveComments({ initialComments, updateId }) {
+  const [comments, setComments] = useState(initialComments);
+  
+  // クライアントサイドの状態管理とイベントハンドリング
+  const addComment = (text) => {
+    setComments(prev => [...prev, { id: Date.now(), text }]);
+  };
+  
+  return (
+    <div>
+      {/* インタラクティブなUI */}
+    </div>
+  );
+}
+```
+
+#### Suspense との統合
+
+```tsx
+import { Suspense } from 'react';
+
+export default function UpdatePage({ params }) {
+  return (
+    <div>
+      {/* 即座に表示される部分 */}
+      <header>
+        <h1>Azure Update</h1>
+      </header>
+      
+      {/* データロードが必要な部分を Suspense でラップ */}
+      <Suspense fallback={<UpdateSkeleton />}>
+        <UpdateContent params={params} />
+      </Suspense>
+      
+      {/* 別のデータソースも個別に Suspense */}
+      <Suspense fallback={<CommentsSkeleton />}>
+        <CommentsSection params={params} />
+      </Suspense>
+    </div>
+  );
+}
+
+// 重いデータフェッチを持つコンポーネント
+async function UpdateContent({ params }) {
+  const { slug } = await params;
+  const data = await slowDataFetch(slug); // 3秒かかる処理
+  
+  return <div>{data.content}</div>;
+}
+
+// 別のデータソース
+async function CommentsSection({ params }) {
+  const { slug } = await params;
+  const comments = await fetchComments(slug); // 1秒かかる処理
+  
+  return <div>{comments.map(c => <div key={c.id}>{c.text}</div>)}</div>;
+}
+```
+
+### ミドルウェアの実行タイミングと制約
+
+#### ミドルウェアの実行順序
+
+```tsx
+// src/middleware.ts
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+
+export function middleware(request: NextRequest) {
+  console.log('1. ミドルウェア実行'); // Edge Runtime で実行
+  
+  // 実行順序：
+  // 1. ミドルウェア（すべてのリクエストで最初）
+  // 2. ルートハンドラー（API routes の場合）
+  // 3. Server Components（ページの場合）
+  // 4. Client Components のハイドレーション
+  
+  const pathname = request.nextUrl.pathname;
+  
+  // Bot 検出ロジック
+  const userAgent = request.headers.get('user-agent') || '';
+  const isBot = detectBot(userAgent);
+  
+  // リダイレクト条件
+  if (pathname.startsWith('/old-path')) {
+    return NextResponse.redirect(new URL('/new-path', request.url));
+  }
+  
+  // ヘッダーの追加
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set('x-is-bot', isBot ? '1' : '0');
+  requestHeaders.set('x-pathname', pathname);
+  
+  // レスポンス ヘッダーの設定
+  const response = NextResponse.next({
+    request: {
+      headers: requestHeaders,
+    },
+  });
+  
+  response.headers.set('x-middleware-cache', 'MISS');
+  
+  return response;
+}
+
+function detectBot(userAgent: string): boolean {
+  const botPatterns = [
+    /googlebot/i,
+    /bingbot/i,
+    /slurp/i,
+    /facebookexternalhit/i,
+    /twitterbot/i,
+    /linkedinbot/i,
+    /whatsapp/i,
+  ];
+  
+  return botPatterns.some(pattern => pattern.test(userAgent));
+}
+
+// マッチャーの詳細な設定
+export const config = {
+  matcher: [
+    // API routes を除外
+    '/((?!api|_next/static|_next/image|favicon.ico).*)',
+    // 特定のパスのみ
+    '/updates/:path*',
+    // 複数の条件
+    {
+      source: '/admin/:path*',
+      has: [
+        {
+          type: 'header',
+          key: 'authorization',
+        }
+      ]
+    }
+  ],
+};
+```
+
+#### Edge Runtime の制約と利点
+
+```tsx
+// Edge Runtime で利用可能な API（制限あり）
+export function middleware(request: NextRequest) {
+  // ✅ 利用可能
+  const url = new URL(request.url);
+  const cookies = request.cookies;
+  const headers = request.headers;
+  
+  // ✅ Web APIs
+  const encoded = btoa('hello'); // Base64 エンコード
+  const uuid = crypto.randomUUID(); // UUID 生成
+  
+  // ❌ Node.js APIs は利用不可
+  // const fs = require('fs'); // エラー
+  // const path = require('path'); // エラー
+  
+  // ✅ Fetch API
+  const response = await fetch('https://api.example.com/data');
+  
+  // ✅ 高速な起動時間（コールドスタート数十ミリ秒）
+  // ✅ 世界中のエッジロケーションで実行
+  
+  return NextResponse.next();
+}
+```
+
+### Parallel Routes と Intercepting Routes の実用例
+
+#### Parallel Routes - 複数コンテンツの同時レンダリング
+
+```tsx
+// app/dashboard/@analytics/page.tsx
+export default async function Analytics() {
+  const data = await getAnalytics();
+  return <div>Analytics: {data}</div>;
+}
+
+// app/dashboard/@notifications/page.tsx  
+export default async function Notifications() {
+  const notifications = await getNotifications();
+  return <div>Notifications: {notifications.length}</div>;
+}
+
+// app/dashboard/layout.tsx
+export default function DashboardLayout({
+  children,
+  analytics, // @analytics スロット
+  notifications, // @notifications スロット
+}: {
+  children: React.ReactNode;
+  analytics: React.ReactNode;
+  notifications: React.ReactNode;
+}) {
+  return (
+    <div className="dashboard-grid">
+      <main>{children}</main>
+      <aside className="analytics-panel">
+        <Suspense fallback={<AnalyticsSkeleton />}>
+          {analytics}
+        </Suspense>
+      </aside>
+      <aside className="notifications-panel">
+        <Suspense fallback={<NotificationsSkeleton />}>
+          {notifications}
+        </Suspense>
+      </aside>
+    </div>
+  );
+}
+```
+
+#### Intercepting Routes - モーダル表示
+
+```tsx
+// app/photos/[id]/page.tsx - 通常のページ
+export default function PhotoPage({ params }) {
+  return (
+    <div className="full-page-photo">
+      <img src={`/photos/${params.id}`} alt="Photo" />
+    </div>
+  );
+}
+
+// app/gallery/(..)photos/[id]/page.tsx - インターセプトされたルート
+export default function PhotoModal({ params }) {
+  return (
+    <div className="modal-overlay">
+      <div className="modal-content">
+        <img src={`/photos/${params.id}`} alt="Photo" />
+        <button onClick={() => router.back()}>Close</button>
+      </div>
+    </div>
+  );
+}
+
+// gallery ページから写真をクリックした場合：
+// - モーダルで表示（Intercepting Route が使用される）
+// 直接 URL にアクセスした場合：
+// - フルページで表示（通常のページが使用される）
 ```
 
 ## ✅ 確認ポイント

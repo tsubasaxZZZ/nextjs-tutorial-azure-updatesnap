@@ -118,22 +118,249 @@ export default function RootLayout({
 
 ## 📚 重要な概念
 
-### App Router
+### App Router の詳細な仕組み
 
-- `app/` ディレクトリ内のファイル構造がそのままルーティングに
-- `page.tsx`: そのルートのページコンポーネント
-- `layout.tsx`: 子ルートで共有されるレイアウト
-- `loading.tsx`: ローディング UI
-- `error.tsx`: エラー UI
+App Router は Next.js 13 で導入された新しいルーティングシステムです。
 
-### Server Components vs Client Components
+#### ディレクトリ構造とルーティングの関係
 
-- デフォルトは Server Components
-- `"use client"` ディレクティブで Client Component に
-- Server Components の利点：
-  - データフェッチングが簡単
-  - バンドルサイズの削減
-  - SEO に有利
+```
+app/
+├── page.tsx                 # / (ルート)
+├── about/
+│   └── page.tsx            # /about
+├── blog/
+│   ├── page.tsx            # /blog
+│   └── [slug]/
+│       └── page.tsx        # /blog/[slug] (動的ルート)
+└── api/
+    └── hello/
+        └── route.ts        # /api/hello (API ルート)
+```
+
+**なぜファイルベースルーティングなのか？**
+- 明示的なルート定義が不要
+- ディレクトリ構造を見れば URL 構造がわかる
+- 自動的なコード分割とプリフェッチ
+
+#### 特殊ファイルの役割と実行順序
+
+```tsx
+// 1. layout.tsx - 最初に実行され、子要素をラップ
+export default function Layout({ children }: { children: React.ReactNode }) {
+  // このコンポーネントは一度だけレンダリングされ、
+  // ページ遷移時も再レンダリングされない
+  return (
+    <div>
+      <nav>共通ナビゲーション</nav>
+      {children}
+    </div>
+  );
+}
+
+// 2. loading.tsx - Suspense のフォールバック
+export default function Loading() {
+  // page.tsx のレンダリング中に表示される
+  return <div>Loading...</div>;
+}
+
+// 3. error.tsx - エラーバウンダリ
+'use client'; // エラーバウンダリは必ず Client Component
+export default function Error({
+  error,
+  reset,
+}: {
+  error: Error;
+  reset: () => void;
+}) {
+  return (
+    <div>
+      <h2>エラーが発生しました</h2>
+      <button onClick={reset}>再試行</button>
+    </div>
+  );
+}
+
+// 4. page.tsx - 実際のページコンテンツ
+export default async function Page() {
+  // Server Component として実行される
+  const data = await fetch('...'); // サーバーサイドでのデータ取得
+  return <div>{/* コンテンツ */}</div>;
+}
+```
+
+### Server Components の深い理解
+
+#### Server Components の実行環境
+
+```tsx
+// これは Server Component（デフォルト）
+export default async function ServerComponent() {
+  // サーバーでのみ実行される
+  console.log('This runs on the server');
+  
+  // 以下のことが可能：
+  // 1. 直接データベースにアクセス
+  const db = await import('./db');
+  const data = await db.query('SELECT * FROM users');
+  
+  // 2. ファイルシステムにアクセス
+  const fs = await import('fs/promises');
+  const file = await fs.readFile('./data.json', 'utf-8');
+  
+  // 3. 環境変数に直接アクセス（NEXT_PUBLIC_ プレフィックス不要）
+  const apiKey = process.env.SECRET_API_KEY;
+  
+  // 4. 大きな依存関係をインポート（クライアントバンドルに含まれない）
+  const heavyLib = await import('heavy-computation-library');
+  
+  return <div>{/* レンダリング結果のみがクライアントに送信される */}</div>;
+}
+```
+
+#### Client Components との境界
+
+```tsx
+// ClientComponent.tsx
+'use client'; // この宣言により Client Component になる
+
+import { useState, useEffect } from 'react';
+
+export default function ClientComponent({ initialData }) {
+  // Client Component でのみ可能なこと：
+  // 1. React Hooks の使用
+  const [count, setCount] = useState(0);
+  
+  // 2. ブラウザ API の使用
+  useEffect(() => {
+    window.addEventListener('resize', handleResize);
+    localStorage.setItem('key', 'value');
+  }, []);
+  
+  // 3. イベントハンドラの使用
+  const handleClick = () => {
+    setCount(count + 1);
+  };
+  
+  return <button onClick={handleClick}>Count: {count}</button>;
+}
+
+// ServerComponent.tsx (Server Component)
+import ClientComponent from './ClientComponent';
+
+export default async function ServerComponent() {
+  // Server Component で データを取得
+  const data = await fetchData();
+  
+  return (
+    <div>
+      {/* Client Component に props として渡す */}
+      {/* 注意: 渡せるのはシリアライズ可能な値のみ */}
+      <ClientComponent initialData={data} />
+    </div>
+  );
+}
+```
+
+### レイアウトの継承とネスティング
+
+```tsx
+// app/layout.tsx - ルートレイアウト
+export default function RootLayout({ children }) {
+  return (
+    <html>
+      <body>
+        <Header /> {/* 全ページ共通 */}
+        {children}
+        <Footer /> {/* 全ページ共通 */}
+      </body>
+    </html>
+  );
+}
+
+// app/dashboard/layout.tsx - ネストされたレイアウト
+export default function DashboardLayout({ children }) {
+  return (
+    <div className="dashboard">
+      <Sidebar /> {/* ダッシュボード配下のページのみ */}
+      <main>{children}</main>
+    </div>
+  );
+}
+
+// app/dashboard/analytics/page.tsx
+export default function AnalyticsPage() {
+  // このページは両方のレイアウトに包まれる：
+  // RootLayout > DashboardLayout > AnalyticsPage
+  return <div>Analytics Content</div>;
+}
+```
+
+### Metadata API の仕組み
+
+```tsx
+// 静的メタデータ
+export const metadata: Metadata = {
+  title: 'Azure Update Viewer',
+  description: 'Microsoft Azure の更新情報ビューア',
+  openGraph: {
+    title: 'Azure Update Viewer',
+    images: ['/og-image.png'],
+  },
+};
+
+// 動的メタデータ
+export async function generateMetadata({ params }): Promise<Metadata> {
+  // ページのパラメータに基づいて動的に生成
+  const post = await getPost(params.id);
+  
+  return {
+    title: post.title,
+    description: post.summary,
+    openGraph: {
+      images: [post.image],
+    },
+  };
+}
+```
+
+### Next.js の最適化の仕組み
+
+#### 自動的なコード分割
+
+```tsx
+// 各 page.tsx は自動的に別のチャンクに分割される
+// app/home/page.tsx → home.js
+// app/about/page.tsx → about.js
+
+// 動的インポートでさらに細かく分割
+const HeavyComponent = dynamic(() => import('./HeavyComponent'), {
+  loading: () => <p>Loading...</p>,
+  // このコンポーネントは必要になるまでロードされない
+});
+```
+
+#### プリフェッチング
+
+```tsx
+import Link from 'next/link';
+
+export default function Navigation() {
+  return (
+    <nav>
+      {/* Link コンポーネントは viewport に入ると自動的にプリフェッチ */}
+      <Link href="/about" prefetch={true}>
+        About
+      </Link>
+      
+      {/* prefetch={false} で無効化も可能 */}
+      <Link href="/heavy-page" prefetch={false}>
+        Heavy Page
+      </Link>
+    </nav>
+  );
+}
+```
 
 ## ✅ 確認ポイント
 

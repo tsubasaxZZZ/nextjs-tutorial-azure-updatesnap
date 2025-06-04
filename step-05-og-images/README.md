@@ -411,23 +411,541 @@ export async function generateStaticParams() {
 
 ## 📚 重要な概念
 
-### Edge Runtime の制限
+### Edge Runtime での画像生成アーキテクチャ
 
-- Node.js API は使用不可
-- ファイルシステムアクセス不可
-- 軽量ライブラリのみ使用可能
-
-### 画像の最適化
-
-- 適切なサイズ（1200x630）
-- テキストの可読性
-- コントラスト比の確保
-
-### フォントの埋め込み
+#### @vercel/og の内部実装と最適化
 
 ```tsx
-const font = fetch(new URL('./font.ttf', import.meta.url))
-  .then((res) => res.arrayBuffer());
+import { ImageResponse } from '@vercel/og';
+
+// Edge Runtime での動作原理
+export const runtime = 'edge';
+
+export async function GET(request: Request) {
+  // 1. Edge Runtime は V8 Isolate で実行
+  // - コールドスタート: 数十ミリ秒
+  // - メモリ制限: 128MB
+  // - 実行時間制限: 30秒
+  
+  // 2. @vercel/og は内部的に以下を使用:
+  // - Satori: React 要素を SVG に変換
+  // - resvg-wasm: SVG を PNG に変換
+  // - WebAssembly: ブラウザレベルの高速処理
+  
+  console.log('Edge function execution start');
+  
+  const startTime = Date.now();
+  
+  // 3. フォントの事前読み込み最適化
+  const fontPromise = getFontData(); // 並行処理
+  const dataPromise = getImageData(request); // 並行処理
+  
+  const [fontData, imageData] = await Promise.all([
+    fontPromise,
+    dataPromise,
+  ]);
+  
+  console.log(`Data fetch took: ${Date.now() - startTime}ms`);
+  
+  // 4. React 要素の構築（仮想DOM）
+  const element = createImageElement(imageData);
+  
+  // 5. 画像生成パイプライン
+  const response = new ImageResponse(element, {
+    width: 1200,
+    height: 630,
+    fonts: [fontData],
+    debug: process.env.NODE_ENV === 'development', // デバッグ情報
+  });
+  
+  console.log(`Total generation time: ${Date.now() - startTime}ms`);
+  
+  return response;
+}
+```
+
+#### ImageResponse の詳細オプション
+
+```tsx
+return new ImageResponse(
+  element,
+  {
+    // 基本設定
+    width: 1200,
+    height: 630,
+    
+    // フォント設定
+    fonts: [
+      {
+        name: 'Inter',
+        data: await interFont,
+        style: 'normal',
+        weight: 400,
+      },
+      {
+        name: 'Inter',
+        data: await interBoldFont,
+        style: 'normal',
+        weight: 700,
+      },
+      {
+        name: 'NotoSansJP',
+        data: await notoSansJPFont,
+        style: 'normal',
+        weight: 400,
+      },
+    ],
+    
+    // デバッグ設定
+    debug: false, // SVG 出力でデバッグ
+    
+    // 画質設定
+    emoji: 'twemoji', // 絵文字レンダリング
+    
+    // HTTP ヘッダー設定
+    headers: {
+      'Cache-Control': 'public, immutable, no-transform, max-age=31536000',
+      'Content-Type': 'image/png',
+    },
+  }
+);
+```
+
+### CSS-in-JS から SVG への変換プロセス
+
+#### Satori による CSS 解釈の制限と回避策
+
+```tsx
+// ❌ サポートされていない CSS プロパティ
+const unsupportedStyles = {
+  // ボックスシャドウ
+  boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)', // ❌
+  
+  // グラデーション（一部制限あり）
+  background: 'conic-gradient(from 180deg, red, blue)', // ❌
+  
+  // トランスフォーム（一部のみサポート）
+  transform: 'perspective(1000px) rotateX(45deg)', // ❌
+  
+  // フィルター
+  filter: 'blur(5px)', // ❌
+  
+  // アニメーション
+  animation: 'spin 1s linear infinite', // ❌
+};
+
+// ✅ サポートされている CSS プロパティ
+const supportedStyles = {
+  // レイアウト
+  display: 'flex',
+  flexDirection: 'column',
+  justifyContent: 'center',
+  alignItems: 'center',
+  
+  // ボックスモデル
+  width: '100%',
+  height: '100%',
+  padding: '20px',
+  margin: '10px',
+  
+  // 背景
+  backgroundColor: '#ffffff',
+  backgroundImage: 'linear-gradient(to right, #ff0000, #0000ff)',
+  
+  // テキスト
+  fontSize: '24px',
+  fontWeight: 'bold',
+  color: '#333333',
+  textAlign: 'center',
+  lineHeight: 1.5,
+  
+  // ボーダー
+  border: '2px solid #000000',
+  borderRadius: '8px',
+  
+  // 位置
+  position: 'absolute',
+  top: '10px',
+  left: '20px',
+};
+
+// 回避策: SVG エフェクトの直接実装
+function ShadowEffect({ children }) {
+  return (
+    <div style={{ position: 'relative' }}>
+      {/* 疑似シャドウ */}
+      <div
+        style={{
+          position: 'absolute',
+          top: '4px',
+          left: '4px',
+          backgroundColor: 'rgba(0, 0, 0, 0.1)',
+          borderRadius: '8px',
+          width: '100%',
+          height: '100%',
+          zIndex: -1,
+        }}
+      />
+      <div
+        style={{
+          backgroundColor: 'white',
+          borderRadius: '8px',
+          padding: '20px',
+          position: 'relative',
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+```
+
+#### 複雑なレイアウトの実装パターン
+
+```tsx
+// パターン1: グリッドレイアウトの実装
+function GridLayout({ items }) {
+  const itemsPerRow = 3;
+  const rows = Math.ceil(items.length / itemsPerRow);
+  
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      {Array.from({ length: rows }).map((_, rowIndex) => (
+        <div key={rowIndex} style={{ display: 'flex', gap: '10px' }}>
+          {items
+            .slice(rowIndex * itemsPerRow, (rowIndex + 1) * itemsPerRow)
+            .map((item, colIndex) => (
+              <div
+                key={colIndex}
+                style={{
+                  flex: 1,
+                  padding: '10px',
+                  backgroundColor: '#f0f0f0',
+                  borderRadius: '4px',
+                }}
+              >
+                {item}
+              </div>
+            ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// パターン2: レスポンシブテキスト
+function ResponsiveText({ text, maxWidth, maxLines = 3 }) {
+  // 文字数に基づくフォントサイズ調整
+  const fontSize = text.length > 100 ? 24 : text.length > 50 ? 32 : 40;
+  
+  // 改行の処理
+  const lines = text.split('\n').slice(0, maxLines);
+  const truncated = lines.length === maxLines && text.split('\n').length > maxLines;
+  
+  return (
+    <div
+      style={{
+        maxWidth,
+        fontSize,
+        lineHeight: 1.3,
+        overflow: 'hidden',
+      }}
+    >
+      {lines.map((line, index) => (
+        <div key={index}>
+          {index === maxLines - 1 && truncated ? line + '...' : line}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// パターン3: アイコンとテキストの組み合わせ
+function IconWithText({ icon, text, iconColor = '#666' }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+      {/* SVG アイコンの埋め込み */}
+      <div
+        style={{
+          width: '24px',
+          height: '24px',
+          backgroundColor: iconColor,
+          borderRadius: '50%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <span style={{ color: 'white', fontSize: '12px', fontWeight: 'bold' }}>
+          {icon}
+        </span>
+      </div>
+      <span style={{ fontSize: '16px', color: '#333' }}>{text}</span>
+    </div>
+  );
+}
+```
+
+### フォント最適化とエンベッディング
+
+#### 日本語フォントの最適化戦略
+
+```tsx
+// フォントサブセット化による最適化
+class FontOptimizer {
+  private static cache = new Map<string, ArrayBuffer>();
+  
+  // 必要な文字のみを含むフォントサブセットを生成
+  static async getOptimizedFont(
+    fontUrl: string,
+    text: string,
+    language: 'ja' | 'en' = 'ja'
+  ): Promise<ArrayBuffer> {
+    const cacheKey = `${fontUrl}-${this.getUniqueChars(text)}`;
+    
+    if (this.cache.has(cacheKey)) {
+      return this.cache.get(cacheKey)!;
+    }
+    
+    // よく使われる文字セット
+    const baseChars = language === 'ja' 
+      ? 'あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん'
+      : 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    
+    const uniqueChars = this.getUniqueChars(text + baseChars);
+    
+    // 実際の実装では fonttools-py などでサブセット化
+    const optimizedFont = await this.subsetFont(fontUrl, uniqueChars);
+    
+    this.cache.set(cacheKey, optimizedFont);
+    return optimizedFont;
+  }
+  
+  private static getUniqueChars(text: string): string {
+    return [...new Set(text)].join('');
+  }
+  
+  private static async subsetFont(fontUrl: string, chars: string): Promise<ArrayBuffer> {
+    // フォントサブセット化のロジック
+    // 実際の実装では外部ツールやサービスを使用
+    const response = await fetch(fontUrl);
+    return response.arrayBuffer();
+  }
+}
+
+// 使用例
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const text = searchParams.get('text') || '';
+  
+  // テキストに基づいてフォントを最適化
+  const optimizedFont = await FontOptimizer.getOptimizedFont(
+    'https://fonts.google.com/download?family=Noto%20Sans%20JP',
+    text,
+    'ja'
+  );
+  
+  return new ImageResponse(
+    <div style={{ fontSize: '32px' }}>{text}</div>,
+    {
+      fonts: [
+        {
+          name: 'NotoSansJP',
+          data: optimizedFont,
+          style: 'normal',
+          weight: 400,
+        },
+      ],
+    }
+  );
+}
+```
+
+#### 複数フォントのフォールバック戦略
+
+```tsx
+// フォントフォールバックの実装
+async function getFontStack(): Promise<Array<{ name: string; data: ArrayBuffer; weight: number }>> {
+  const fonts = [
+    {
+      name: 'Inter',
+      url: new URL('../assets/Inter-Regular.woff2', import.meta.url),
+      weight: 400,
+    },
+    {
+      name: 'Inter',
+      url: new URL('../assets/Inter-Bold.woff2', import.meta.url),
+      weight: 700,
+    },
+    {
+      name: 'NotoSansJP',
+      url: new URL('../assets/NotoSansJP-Regular.woff2', import.meta.url),
+      weight: 400,
+    },
+  ];
+  
+  const fontPromises = fonts.map(async (font) => {
+    try {
+      const response = await fetch(font.url);
+      const data = await response.arrayBuffer();
+      return { name: font.name, data, weight: font.weight };
+    } catch (error) {
+      console.error(`Failed to load font ${font.name}:`, error);
+      return null;
+    }
+  });
+  
+  const results = await Promise.allSettled(fontPromises);
+  return results
+    .filter((result): result is PromiseFulfilledResult<{ name: string; data: ArrayBuffer; weight: number }> => 
+      result.status === 'fulfilled' && result.value !== null
+    )
+    .map(result => result.value);
+}
+
+// スタイルでのフォントスタック指定
+const textStyle = {
+  fontFamily: 'Inter, "Noto Sans JP", sans-serif',
+  fontWeight: 400,
+  fontSize: '24px',
+};
+```
+
+### パフォーマンス最適化とキャッシング戦略
+
+#### 多層キャッシング実装
+
+```tsx
+// 1. CDN レベルキャッシング
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const id = searchParams.get('id');
+  const theme = searchParams.get('theme') || 'light';
+  const lang = searchParams.get('lang') || 'ja';
+  
+  // Cache-Control ヘッダーによる階層化キャッシュ
+  const cacheHeaders = {
+    // CDN: 1年間キャッシュ
+    'Cache-Control': 'public, immutable, no-transform, s-maxage=31536000, max-age=31536000',
+    // Vercel Edge Cache: より短期間
+    'Vercel-CDN-Cache-Control': 'max-age=86400',
+    // ブラウザキャッシュ: 最も短期間
+    'CDN-Cache-Control': 'max-age=3600',
+  };
+  
+  // 2. メモリキャッシング
+  const memoryCache = new Map();
+  const cacheKey = `og-${id}-${theme}-${lang}`;
+  
+  if (memoryCache.has(cacheKey)) {
+    const cached = memoryCache.get(cacheKey);
+    return new Response(cached.buffer, {
+      headers: {
+        'Content-Type': 'image/png',
+        'X-Cache': 'HIT-MEMORY',
+        ...cacheHeaders,
+      },
+    });
+  }
+  
+  // 3. 画像生成
+  const imageResponse = await generateImage(id, theme, lang);
+  
+  // メモリキャッシュに保存
+  const buffer = await imageResponse.arrayBuffer();
+  memoryCache.set(cacheKey, { buffer, timestamp: Date.now() });
+  
+  return new Response(buffer, {
+    headers: {
+      'Content-Type': 'image/png',
+      'X-Cache': 'MISS',
+      ...cacheHeaders,
+    },
+  });
+}
+
+// 4. 条件付きキャッシング
+export async function GET(request: Request) {
+  const ifNoneMatch = request.headers.get('if-none-match');
+  const ifModifiedSince = request.headers.get('if-modified-since');
+  
+  const lastModified = await getLastModified(id);
+  const etag = await generateETag(id, theme, lang);
+  
+  // 304 Not Modified レスポンス
+  if (ifNoneMatch === etag || 
+      (ifModifiedSince && new Date(ifModifiedSince) >= lastModified)) {
+    return new Response(null, {
+      status: 304,
+      headers: {
+        'ETag': etag,
+        'Last-Modified': lastModified.toUTCString(),
+        'Cache-Control': 'public, max-age=3600',
+      },
+    });
+  }
+  
+  // 通常のレスポンス
+  const imageResponse = await generateImage(id, theme, lang);
+  
+  return new Response(await imageResponse.arrayBuffer(), {
+    headers: {
+      'Content-Type': 'image/png',
+      'ETag': etag,
+      'Last-Modified': lastModified.toUTCString(),
+      'Cache-Control': 'public, max-age=3600',
+    },
+  });
+}
+```
+
+#### バッチ処理と事前生成
+
+```tsx
+// 静的生成による事前処理
+export async function generateStaticParams() {
+  // よくアクセスされる更新の OG 画像を事前生成
+  const popularUpdates = await getPopularUpdates();
+  
+  return popularUpdates.flatMap(update => [
+    { id: update.id },
+    { id: update.id, theme: 'dark' },
+    { id: update.id, lang: 'en' },
+  ]);
+}
+
+// バックグラウンドでの画像事前生成
+export async function POST(request: Request) {
+  const { updateIds } = await request.json();
+  
+  // 非同期で複数の画像を生成
+  const generationPromises = updateIds.map(async (id: string) => {
+    try {
+      const themes = ['light', 'dark'];
+      const languages = ['ja', 'en'];
+      
+      for (const theme of themes) {
+        for (const lang of languages) {
+          await fetch(`${process.env.NEXT_PUBLIC_BASE_URL}/api/og/${id}?theme=${theme}&lang=${lang}`);
+        }
+      }
+      
+      return { id, status: 'success' };
+    } catch (error) {
+      return { id, status: 'error', error: error.message };
+    }
+  });
+  
+  const results = await Promise.allSettled(generationPromises);
+  
+  return NextResponse.json({
+    total: updateIds.length,
+    successful: results.filter(r => r.status === 'fulfilled').length,
+    failed: results.filter(r => r.status === 'rejected').length,
+    results,
+  });
+}
 ```
 
 ## ✅ 確認ポイント

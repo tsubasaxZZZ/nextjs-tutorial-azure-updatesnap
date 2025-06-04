@@ -403,39 +403,434 @@ NEXT_PUBLIC_BASE_URL=http://localhost:3000
 
 ## 📚 重要な概念
 
-### Server Components でのデータフェッチング
+### Next.js データフェッチングアーキテクチャの深い理解
 
-- 直接 `async/await` が使える
-- クライアントにデータを送る前に処理
-- SEO フレンドリー
-
-### Suspense とストリーミング
+#### Server Components でのデータフェッチングの仕組み
 
 ```tsx
-<Suspense fallback={<Loading />}>
-  <AsyncComponent />
-</Suspense>
-```
-
-### エラー境界
-
-```tsx
-// app/[slug]/error.tsx
-'use client';
-
-export default function Error({
-  error,
-  reset,
-}: {
-  error: Error & { digest?: string };
-  reset: () => void;
-}) {
+// Server Component での非同期データフェッチング
+export default async function UpdatePage({ params }: Props) {
+  // この関数はサーバーサイドでのみ実行される
+  console.log('This runs on the server'); // ブラウザには表示されない
+  
+  // 1. 直接データベースアクセス
+  const cachedData = await supabase
+    .from('azure_updates')
+    .select('*')
+    .eq('update_id', id)
+    .single();
+  
+  // 2. 複数の非同期処理を並列実行
+  const [updateData, relatedData, userPreferences] = await Promise.all([
+    fetchAzureUpdate(id),
+    fetchRelatedUpdates(id),
+    getUserPreferences(userId),
+  ]);
+  
+  // 3. 計算集約的な処理もサーバーで実行
+  const processedData = updateData.map(item => ({
+    ...item,
+    readingTime: calculateReadingTime(item.description),
+    sentiment: analyzeSentiment(item.description), // 重い ML 処理
+  }));
+  
+  // 4. 条件分岐もサーバーサイドで
+  if (!updateData) {
+    notFound(); // 適切な 404 レスポンス
+  }
+  
+  // 5. レンダリング結果のみがクライアントに送信される
   return (
     <div>
-      <h2>エラーが発生しました</h2>
-      <button onClick={() => reset()}>再試行</button>
+      <h1>{updateData.title}</h1>
+      <p>Reading time: {processedData.readingTime} minutes</p>
+      {userPreferences.showDetails && (
+        <DetailedView data={processedData} />
+      )}
     </div>
   );
+}
+```
+
+#### データフェッチングパターンの比較
+
+```tsx
+// ❌ Client Component での従来のフェッチング
+'use client';
+function ClientUpdatePage({ id }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  
+  useEffect(() => {
+    // クライアントサイドでの API 呼び出し
+    fetch(`/api/updates/${id}`)
+      .then(res => res.json())
+      .then(setData)
+      .catch(setError)
+      .finally(() => setLoading(false));
+  }, [id]);
+  
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  if (!data) return <div>Not found</div>;
+  
+  return <div>{data.title}</div>;
+}
+
+// ✅ Server Component での最適化されたフェッチング
+async function ServerUpdatePage({ params }) {
+  // サーバーサイドで事前にデータを取得
+  const data = await getOrFetchAzureUpdate(params.id);
+  
+  // データがない場合は適切に 404 を返す
+  if (!data) notFound();
+  
+  // ローディング状態やエラー状態の管理が不要
+  return <div>{data.title}</div>;
+}
+```
+
+### キャッシング戦略の詳細設計
+
+#### 多層キャッシュアーキテクチャ
+
+```tsx
+async function getOrFetchAzureUpdate(id: string): Promise<AzureUpdate | null> {
+  // 1. Request Deduplication（同一リクエストの重複排除）
+  const cacheKey = `azure-update-${id}`;
+  
+  // Next.js の fetch() での自動キャッシュ
+  const response = await fetch(`${API_BASE}/updates/${id}`, {
+    next: {
+      revalidate: 3600, // 1時間キャッシュ
+      tags: [`update-${id}`], // タグベースの無効化
+    },
+  });
+  
+  // 2. アプリケーションレベルキャッシュ
+  const memoryCache = new Map();
+  if (memoryCache.has(cacheKey)) {
+    const cached = memoryCache.get(cacheKey);
+    if (cached.expiresAt > Date.now()) {
+      return cached.data; // メモリキャッシュヒット
+    }
+  }
+  
+  // 3. データベースキャッシュ
+  const dbCached = await supabase
+    .from('azure_updates')
+    .select('*')
+    .eq('update_id', id)
+    .gte('ttl_expires_at', new Date().toISOString())
+    .single();
+  
+  if (dbCached.data) {
+    // メモリキャッシュにも保存
+    memoryCache.set(cacheKey, {
+      data: transformDbToApi(dbCached.data),
+      expiresAt: Date.now() + 300000, // 5分間メモリキャッシュ
+    });
+    return transformDbToApi(dbCached.data);
+  }
+  
+  // 4. 外部API + Stale-While-Revalidate
+  const freshData = await fetchFromMicrosoftAPI(id);
+  
+  // 非同期でキャッシュ更新（レスポンスはブロックしない）
+  updateCacheInBackground(id, freshData);
+  
+  return freshData;
+}
+
+async function updateCacheInBackground(id: string, data: AzureUpdate) {
+  // データベース更新を非同期で実行
+  Promise.resolve().then(async () => {
+    await supabase
+      .from('azure_updates')
+      .upsert({
+        update_id: id,
+        ...transformApiToDb(data),
+        ttl_expires_at: new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString(),
+      });
+  }).catch(error => {
+    console.error('Background cache update failed:', error);
+  });
+}
+```
+
+#### 動的キャッシュ戦略
+
+```tsx
+async function getUpdateWithStrategy(
+  id: string, 
+  options: {
+    strategy?: 'cache-first' | 'network-first' | 'cache-only' | 'network-only';
+    maxAge?: number;
+    staleWhileRevalidate?: boolean;
+  } = {}
+): Promise<AzureUpdate | null> {
+  
+  const { strategy = 'cache-first', maxAge = 3600, staleWhileRevalidate = true } = options;
+  
+  switch (strategy) {
+    case 'cache-only':
+      // キャッシュのみ、ネットワークアクセスなし
+      return await getCachedData(id);
+      
+    case 'network-only':
+      // 常に最新データを取得
+      const fresh = await fetchFromMicrosoftAPI(id);
+      updateCacheInBackground(id, fresh);
+      return fresh;
+      
+    case 'network-first':
+      // ネットワーク優先、フォールバックでキャッシュ
+      try {
+        const networkData = await fetchFromMicrosoftAPI(id);
+        updateCacheInBackground(id, networkData);
+        return networkData;
+      } catch (error) {
+        console.warn('Network failed, falling back to cache:', error);
+        return await getCachedData(id);
+      }
+      
+    case 'cache-first':
+    default:
+      // キャッシュ優先戦略
+      const cached = await getCachedData(id);
+      
+      if (cached) {
+        const age = Date.now() - new Date(cached.updatedAt).getTime();
+        
+        if (age < maxAge * 1000) {
+          // フレッシュなキャッシュ
+          return cached;
+        } else if (staleWhileRevalidate) {
+          // 古いキャッシュを返しつつ、バックグラウンドで更新
+          updateDataInBackground(id);
+          return cached;
+        }
+      }
+      
+      // キャッシュがない、または期限切れ
+      return await fetchFromMicrosoftAPI(id);
+  }
+}
+```
+
+### Suspense の高度な活用とストリーミング
+
+#### 段階的データローディング
+
+```tsx
+export default function UpdatePage({ params }) {
+  return (
+    <div>
+      {/* 即座に表示される部分 */}
+      <Header />
+      
+      {/* 基本情報を先に読み込み */}
+      <Suspense fallback={<BasicInfoSkeleton />}>
+        <BasicInfo params={params} />
+      </Suspense>
+      
+      {/* 詳細情報は遅延読み込み */}
+      <Suspense fallback={<DetailsSkeleton />}>
+        <DetailedContent params={params} />
+      </Suspense>
+      
+      {/* 関連コンテンツも個別に読み込み */}
+      <Suspense fallback={<RelatedSkeleton />}>
+        <RelatedUpdates params={params} />
+      </Suspense>
+    </div>
+  );
+}
+
+// 基本情報（高速なクエリ）
+async function BasicInfo({ params }) {
+  const basicData = await supabase
+    .from('azure_updates')
+    .select('title, description, tags')
+    .eq('update_id', params.id)
+    .single();
+  
+  return (
+    <div>
+      <h1>{basicData.data.title}</h1>
+      <p>{basicData.data.description}</p>
+    </div>
+  );
+}
+
+// 詳細情報（重いクエリ）
+async function DetailedContent({ params }) {
+  // 時間のかかる処理
+  const [details, analysis, history] = await Promise.all([
+    fetchDetailedInfo(params.id),
+    performContentAnalysis(params.id), // 3秒かかる AI 処理
+    fetchUpdateHistory(params.id),
+  ]);
+  
+  return (
+    <div>
+      <DetailedView details={details} />
+      <AnalysisView analysis={analysis} />
+      <HistoryView history={history} />
+    </div>
+  );
+}
+```
+
+#### ストリーミング SSR の仕組み
+
+```tsx
+// app/layout.tsx - ストリーミング対応のルートレイアウト
+export default function RootLayout({ children }) {
+  return (
+    <html>
+      <body>
+        {/* 即座に送信される部分 */}
+        <header>Azure Update Viewer</header>
+        
+        {/* Suspense 境界により段階的に送信 */}
+        <main>
+          {children}
+        </main>
+        
+        {/* フッターも即座に表示 */}
+        <footer>© 2024</footer>
+      </body>
+    </html>
+  );
+}
+
+// ストリーミングの流れ：
+// 1. HTML の shell（header, footer）が即座に送信
+// 2. Suspense fallback が表示
+// 3. Server Component の処理完了後、実際のコンテンツで置き換え
+// 4. JavaScript によりハイドレーション
+
+// 送信される HTML の例：
+/*
+<html>
+  <body>
+    <header>Azure Update Viewer</header>
+    <main>
+      <div>Loading basic info...</div> <!-- fallback -->
+    </main>
+    <footer>© 2024</footer>
+  </body>
+  
+  <!-- 後から送信される部分 -->
+  <script>
+    // 実際のコンテンツでfallbackを置き換え
+    document.getElementById('suspense-1').innerHTML = `
+      <h1>Actual Title</h1>
+      <p>Actual content...</p>
+    `;
+  </script>
+</html>
+*/
+```
+
+### データキャッシュの無効化とリバリデーション
+
+#### タグベースの無効化
+
+```tsx
+import { revalidateTag } from 'next/cache';
+
+// データフェッチング時にタグを付与
+async function fetchUpdate(id: string) {
+  const response = await fetch(`${API_BASE}/updates/${id}`, {
+    next: {
+      tags: [`update-${id}`, 'updates', `user-${userId}`],
+    },
+  });
+  return response.json();
+}
+
+// API Route での無効化
+export async function POST(request: NextRequest) {
+  const { updateId } = await request.json();
+  
+  // 特定の更新のキャッシュを無効化
+  revalidateTag(`update-${updateId}`);
+  
+  // 全ての更新のキャッシュを無効化
+  revalidateTag('updates');
+  
+  return NextResponse.json({ revalidated: true });
+}
+
+// Webhook での自動無効化
+export async function POST(request: NextRequest) {
+  const signature = request.headers.get('x-signature');
+  
+  // Webhook の検証
+  if (!verifySignature(signature, await request.text())) {
+    return new Response('Unauthorized', { status: 401 });
+  }
+  
+  const { action, updateId } = await request.json();
+  
+  if (action === 'update.modified') {
+    // Microsoft 側で更新があった場合、キャッシュを無効化
+    revalidateTag(`update-${updateId}`);
+    
+    // データベースからも削除して強制再取得
+    await supabase
+      .from('azure_updates')
+      .delete()
+      .eq('update_id', updateId);
+  }
+  
+  return NextResponse.json({ success: true });
+}
+```
+
+#### 時間ベースのリバリデーション
+
+```tsx
+// 定期的なバックグラウンド更新
+export async function GET() {
+  // cron job や scheduled function で呼び出される
+  
+  // 期限切れのキャッシュを特定
+  const { data: expiredEntries } = await supabase
+    .from('azure_updates')
+    .select('update_id')
+    .lt('ttl_expires_at', new Date().toISOString());
+  
+  // バッチでリフレッシュ
+  const refreshPromises = expiredEntries.map(async (entry) => {
+    try {
+      const freshData = await fetchFromMicrosoftAPI(entry.update_id);
+      
+      await supabase
+        .from('azure_updates')
+        .upsert({
+          update_id: entry.update_id,
+          ...transformApiToDb(freshData),
+          ttl_expires_at: new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString(),
+        });
+      
+      // Next.js キャッシュも無効化
+      revalidateTag(`update-${entry.update_id}`);
+      
+    } catch (error) {
+      console.error(`Failed to refresh ${entry.update_id}:`, error);
+    }
+  });
+  
+  await Promise.allSettled(refreshPromises);
+  
+  return NextResponse.json({ 
+    refreshed: expiredEntries.length,
+    timestamp: new Date().toISOString(),
+  });
 }
 ```
 

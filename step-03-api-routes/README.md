@@ -357,43 +357,427 @@ export function useAzureUpdate(id: string) {
 
 ## 📚 重要な概念
 
-### Edge Runtime vs Node.js Runtime
+### Route Handlers の設計思想と Request/Response の仕組み
+
+#### NextRequest と NextResponse の拡張機能
 
 ```ts
-// Edge Runtime（高速、制限あり）
+import { NextRequest, NextResponse } from 'next/server';
+
+export async function GET(request: NextRequest) {
+  // NextRequest は標準の Request オブジェクトを拡張
+  
+  // 1. URLSearchParams へのアクセス
+  const searchParams = request.nextUrl.searchParams;
+  const id = searchParams.get('id');
+  const page = searchParams.get('page') || '1';
+  
+  // 2. Cookie へのアクセス
+  const sessionToken = request.cookies.get('session-token')?.value;
+  
+  // 3. 地理的情報（Vercel でホストする場合）
+  const country = request.geo?.country;
+  const city = request.geo?.city;
+  
+  // 4. IP アドレスの取得
+  const ip = request.headers.get('x-forwarded-for') || 
+             request.headers.get('x-real-ip') ||
+             request.ip ||
+             'unknown';
+  
+  // 5. User-Agent のパース
+  const userAgent = request.headers.get('user-agent') || '';
+  const isMobile = /Mobile|Android|iPhone/i.test(userAgent);
+  
+  return NextResponse.json({ 
+    id, 
+    page: parseInt(page),
+    country,
+    isMobile 
+  });
+}
+
+export async function POST(request: NextRequest) {
+  // リクエストボディの処理方法
+  
+  // JSON の場合
+  const jsonData = await request.json();
+  
+  // FormData の場合
+  const formData = await request.formData();
+  const file = formData.get('file') as File;
+  
+  // テキストの場合
+  const textData = await request.text();
+  
+  // ArrayBuffer の場合（バイナリデータ）
+  const bufferData = await request.arrayBuffer();
+  
+  return NextResponse.json({ success: true });
+}
+```
+
+#### NextResponse の高度な機能
+
+```ts
+export async function GET(request: NextRequest) {
+  const data = await fetchData();
+  
+  // 基本的なJSONレスポンス
+  const basicResponse = NextResponse.json(data);
+  
+  // カスタムヘッダー付きレスポンス
+  const responseWithHeaders = NextResponse.json(data, {
+    status: 200,
+    headers: {
+      'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400',
+      'X-Custom-Header': 'custom-value',
+      'Access-Control-Allow-Origin': '*',
+    },
+  });
+  
+  // Cookie を設定するレスポンス
+  const responseWithCookie = NextResponse.json(data);
+  responseWithCookie.cookies.set('user-preference', 'dark-mode', {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'strict',
+    maxAge: 60 * 60 * 24 * 7, // 1週間
+  });
+  
+  // リダイレクトレスポンス
+  const redirectResponse = NextResponse.redirect(
+    new URL('/new-path', request.url),
+    { status: 307 } // 一時的なリダイレクト
+  );
+  
+  // Rewrite（内部的に別のパスを表示）
+  const rewriteResponse = NextResponse.rewrite(
+    new URL('/internal-path', request.url)
+  );
+  
+  return responseWithHeaders;
+}
+```
+
+### Edge Runtime vs Node.js Runtime の詳細比較
+
+#### Edge Runtime の制約と利点
+
+```ts
+// route.ts で Runtime を指定
 export const runtime = 'edge';
 
-// Node.js Runtime（フル機能）
+// ✅ Edge Runtime で利用可能
+export async function GET(request: NextRequest) {
+  // Web標準API
+  const url = new URL(request.url);
+  const headers = new Headers();
+  
+  // Crypto API
+  const uuid = crypto.randomUUID();
+  const hash = await crypto.subtle.digest('SHA-256', 
+    new TextEncoder().encode('data')
+  );
+  
+  // Fetch API
+  const response = await fetch('https://api.example.com/data', {
+    headers: {
+      'Authorization': `Bearer ${process.env.API_KEY}`,
+    },
+  });
+  
+  // 軽量な JavaScript 処理
+  const data = await response.json();
+  const processed = data.map(item => ({
+    ...item,
+    processedAt: new Date().toISOString(),
+  }));
+  
+  return NextResponse.json(processed);
+}
+
+// ❌ Edge Runtime で利用不可能な例
+/*
+import fs from 'fs'; // Node.js ファイルシステム
+import { createConnection } from 'mysql2'; // ネイティブデータベース接続
+import sharp from 'sharp'; // 重いImageライブラリ
+
+export async function POST(request: NextRequest) {
+  // これらはエラーになる
+  const fileContent = fs.readFileSync('./data.json'); // ❌
+  const connection = createConnection({ ... }); // ❌
+  const image = sharp(buffer); // ❌
+}
+*/
+```
+
+#### Node.js Runtime のフル機能
+
+```ts
+// route.ts
 export const runtime = 'nodejs'; // デフォルト
+
+import fs from 'fs/promises';
+import path from 'path';
+import { createHash } from 'crypto';
+
+export async function GET(request: NextRequest) {
+  // ファイルシステムアクセス
+  const filePath = path.join(process.cwd(), 'data', 'cache.json');
+  const fileExists = await fs.access(filePath).then(() => true).catch(() => false);
+  
+  if (fileExists) {
+    const content = await fs.readFile(filePath, 'utf-8');
+    return NextResponse.json(JSON.parse(content));
+  }
+  
+  // データベース接続（例：Prisma）
+  const prisma = new PrismaClient();
+  const data = await prisma.user.findMany();
+  
+  // 重い処理
+  const processedData = await heavyComputation(data);
+  
+  // ファイルにキャッシュ
+  await fs.writeFile(filePath, JSON.stringify(processedData));
+  
+  return NextResponse.json(processedData);
+}
+
+export async function POST(request: NextRequest) {
+  const formData = await request.formData();
+  const file = formData.get('file') as File;
+  
+  if (file) {
+    // ファイルの保存
+    const buffer = await file.arrayBuffer();
+    const filename = `${Date.now()}-${file.name}`;
+    const uploadPath = path.join(process.cwd(), 'public', 'uploads', filename);
+    
+    await fs.writeFile(uploadPath, Buffer.from(buffer));
+    
+    return NextResponse.json({
+      message: 'File uploaded successfully',
+      filename,
+      path: `/uploads/${filename}`,
+    });
+  }
+  
+  return NextResponse.json({ error: 'No file provided' }, { status: 400 });
+}
 ```
 
-### レスポンスヘッダーの制御
+### ストリーミングレスポンスの詳細実装
+
+#### Server-Sent Events (SSE) の実装
 
 ```ts
-return NextResponse.json(data, {
-  headers: {
-    'Cache-Control': 'public, s-maxage=60, stale-while-revalidate',
-    'X-Custom-Header': 'value',
-  },
-});
-```
-
-### ストリーミングレスポンス
-
-```ts
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const encoder = new TextEncoder();
+  
   const stream = new ReadableStream({
     async start(controller) {
-      controller.enqueue('data: Hello\n\n');
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      controller.enqueue('data: World\n\n');
-      controller.close();
+      // SSE ヘッダーの送信
+      const sendEvent = (data: any, event?: string) => {
+        const formatted = `${event ? `event: ${event}\n` : ''}data: ${JSON.stringify(data)}\n\n`;
+        controller.enqueue(encoder.encode(formatted));
+      };
+      
+      // 初期データ送信
+      sendEvent({ message: 'Connection established', timestamp: Date.now() }, 'connect');
+      
+      // 定期的なデータ送信
+      let counter = 0;
+      const interval = setInterval(() => {
+        sendEvent({
+          counter: ++counter,
+          timestamp: Date.now(),
+          randomValue: Math.random(),
+        }, 'update');
+        
+        // 10回で終了
+        if (counter >= 10) {
+          clearInterval(interval);
+          sendEvent({ message: 'Stream completed' }, 'complete');
+          controller.close();
+        }
+      }, 1000);
+      
+      // クライアントが接続を切断した場合のクリーンアップ
+      request.signal.addEventListener('abort', () => {
+        clearInterval(interval);
+        controller.close();
+      });
     },
   });
 
   return new Response(stream, {
     headers: {
       'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+    },
+  });
+}
+```
+
+#### リアルタイムデータのストリーミング
+
+```ts
+export async function GET(request: NextRequest) {
+  const searchParams = request.nextUrl.searchParams;
+  const topic = searchParams.get('topic') || 'general';
+  
+  const stream = new ReadableStream({
+    async start(controller) {
+      const encoder = new TextEncoder();
+      
+      // 外部APIからのデータを定期的に取得してストリーム
+      const fetchAndStream = async () => {
+        try {
+          const response = await fetch(`https://api.example.com/live/${topic}`);
+          const data = await response.json();
+          
+          controller.enqueue(encoder.encode(
+            `data: ${JSON.stringify(data)}\n\n`
+          ));
+        } catch (error) {
+          controller.enqueue(encoder.encode(
+            `data: ${JSON.stringify({ error: 'Failed to fetch data' })}\n\n`
+          ));
+        }
+      };
+      
+      // 即座に最初のデータを送信
+      await fetchAndStream();
+      
+      // 5秒ごとに更新
+      const interval = setInterval(fetchAndStream, 5000);
+      
+      // クリーンアップ
+      request.signal.addEventListener('abort', () => {
+        clearInterval(interval);
+        controller.close();
+      });
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
+  });
+}
+```
+
+### 高度なキャッシュ制御戦略
+
+#### 多層キャッシュ制御
+
+```ts
+export async function GET(request: NextRequest) {
+  const searchParams = request.nextUrl.searchParams;
+  const id = searchParams.get('id');
+  const forceRefresh = searchParams.get('refresh') === 'true';
+  
+  // 1. メモリキャッシュ
+  if (!forceRefresh && memoryCache.has(id)) {
+    const cached = memoryCache.get(id);
+    if (cached.expiresAt > Date.now()) {
+      return NextResponse.json(cached.data, {
+        headers: {
+          'X-Cache': 'HIT-MEMORY',
+          'Cache-Control': 'public, max-age=60',
+        },
+      });
+    }
+  }
+  
+  // 2. データベースキャッシュ
+  if (!forceRefresh) {
+    const dbCached = await getCachedFromDatabase(id);
+    if (dbCached && dbCached.expiresAt > new Date()) {
+      // メモリキャッシュにも保存
+      memoryCache.set(id, {
+        data: dbCached.data,
+        expiresAt: dbCached.expiresAt.getTime(),
+      });
+      
+      return NextResponse.json(dbCached.data, {
+        headers: {
+          'X-Cache': 'HIT-DATABASE',
+          'Cache-Control': 'public, max-age=300',
+        },
+      });
+    }
+  }
+  
+  // 3. 外部APIから取得
+  const freshData = await fetchFromExternalAPI(id);
+  
+  // キャッシュに保存
+  const expiresAt = new Date(Date.now() + 3600000); // 1時間後
+  await saveToDatabaseCache(id, freshData, expiresAt);
+  memoryCache.set(id, {
+    data: freshData,
+    expiresAt: expiresAt.getTime(),
+  });
+  
+  return NextResponse.json(freshData, {
+    headers: {
+      'X-Cache': 'MISS',
+      'Cache-Control': 'public, max-age=3600, stale-while-revalidate=86400',
+    },
+  });
+}
+```
+
+#### 条件付きキャッシュ
+
+```ts
+export async function GET(request: NextRequest) {
+  const ifNoneMatch = request.headers.get('if-none-match');
+  const ifModifiedSince = request.headers.get('if-modified-since');
+  
+  const data = await fetchData();
+  
+  // ETag の生成
+  const etag = `"${createHash('md5').update(JSON.stringify(data)).digest('hex')}"`;
+  
+  // 304 Not Modified の判定
+  if (ifNoneMatch === etag) {
+    return new Response(null, {
+      status: 304,
+      headers: {
+        'ETag': etag,
+        'Cache-Control': 'public, max-age=3600',
+      },
+    });
+  }
+  
+  const lastModified = new Date(data.updatedAt).toUTCString();
+  
+  if (ifModifiedSince && new Date(ifModifiedSince) >= new Date(data.updatedAt)) {
+    return new Response(null, {
+      status: 304,
+      headers: {
+        'Last-Modified': lastModified,
+        'Cache-Control': 'public, max-age=3600',
+      },
+    });
+  }
+  
+  // 通常のレスポンス
+  return NextResponse.json(data, {
+    headers: {
+      'ETag': etag,
+      'Last-Modified': lastModified,
+      'Cache-Control': 'public, max-age=3600',
+      'Vary': 'Accept-Encoding',
     },
   });
 }
