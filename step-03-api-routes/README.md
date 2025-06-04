@@ -1,101 +1,438 @@
-# Step 3: API ルートの実装
+# Step 3: API Routes Implementation - Mastering Modern Server-Side Development
 
-このステップでは、Next.js の Route Handlers を使って API エンドポイントを実装します。
+このステップでは、現代的なAPI設計の思想と Next.js の Route Handlers を使った実装を深く学びます。
 
 ## 🎯 このステップで学ぶこと
 
-- Route Handlers の基本
-- 外部 API との連携
-- エラーハンドリング
-- レート制限の実装
-- キャッシュ制御
+- **API発展の歴史**: REST → GraphQL → 現代的なアプローチ
+- **Route Handlers**: Next.js 14 の革新的な API 設計
+- **Microsoft API 統合**: エンタープライズ API との連携パターン
+- **レート制限システム**: 本格的なプロダクション対応
+- **セキュリティ**: エンタープライズアプリケーション向け設計
+- **パフォーマンス**: Edge Computing と最適化戦略
 
-## 📖 解説
+## 📖 現代的 API 開発の完全ガイド
 
-### Route Handlers とは
+### API アーキテクチャの進化史
 
-Next.js 14 の API ルートは Route Handlers と呼ばれ、`route.ts` ファイルで定義します。
+#### 第一世代：SOAP と XML-RPC (2000年代前半)
+```xml
+<!-- SOAP の例：冗長で複雑 -->
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <GetUserRequest>
+      <UserId>12345</UserId>
+    </GetUserRequest>
+  </soap:Body>
+</soap:Envelope>
+```
+
+SOAPは厳密な契約ベースの設計でしたが、オーバーヘッドが大きく、Web開発には適さないことが判明しました。
+
+#### 第二世代：RESTful APIs (2000年代後半〜2010年代)
+```ts
+// REST の設計思想
+GET    /api/users/123      // ユーザー取得
+POST   /api/users          // ユーザー作成
+PUT    /api/users/123      // ユーザー更新
+DELETE /api/users/123      // ユーザー削除
+```
+
+RESTは **リソース志向** の設計で、HTTPの標準的な動詞を活用。シンプルで理解しやすい一方、複雑なデータ取得では N+1 問題や over-fetching が課題となりました。
+
+#### 第三世代：GraphQL の台頭 (2010年代中期〜)
+```graphql
+# GraphQL の例：必要なデータだけを指定
+query GetUserWithPosts($id: ID!) {
+  user(id: $id) {
+    name
+    email
+    posts(limit: 5) {
+      title
+      publishedAt
+    }
+  }
+}
+```
+
+Facebookが開発したGraphQLは、**クエリ言語** として柔軟なデータ取得を可能にしましたが、学習コストとキャッシュの複雑さが問題となりました。
+
+#### 第四世代：Next.js Route Handlers の革新 (2020年代)
+```ts
+// 現代的なアプローチ：型安全性 + エッジ最適化 + ストリーミング
+export async function GET(request: NextRequest) {
+  const data = await fetchData();
+  return NextResponse.json(data, {
+    headers: {
+      'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400',
+    },
+  });
+}
+```
+
+Next.js Route Handlers は：
+- **型安全性**：TypeScript ネイティブ
+- **エッジ最適化**：世界中のCDNで実行
+- **ストリーミング**：大量データの効率的配信
+- **Web Standards**：標準的なAPIに準拠
+
+### Route Handlers の革命的な設計思想
+
+#### ファイルシステムベースルーティングの力
 
 ```
 app/
 ├── api/
-│   ├── refresh/
-│   │   └── route.ts      # /api/refresh
-│   └── cache-url/
-│       └── route.ts      # /api/cache-url
+│   ├── users/
+│   │   ├── route.ts                    # /api/users
+│   │   ├── [id]/
+│   │   │   ├── route.ts               # /api/users/[id]
+│   │   │   └── posts/
+│   │   │       └── route.ts           # /api/users/[id]/posts
+│   │   └── bulk/
+│   │       └── route.ts               # /api/users/bulk
+│   ├── azure/
+│   │   ├── updates/
+│   │   │   ├── route.ts               # /api/azure/updates
+│   │   │   └── [id]/
+│   │   │       └── route.ts           # /api/azure/updates/[id]
+│   │   └── health/
+│   │       └── route.ts               # /api/azure/health
+│   └── internal/
+│       ├── cache-flush/
+│       │   └── route.ts               # /api/internal/cache-flush
+│       └── metrics/
+│           └── route.ts               # /api/internal/metrics
 ```
 
-### HTTP メソッドのサポート
+この設計の利点：
+- **直感的**: URLとファイル構造が一致
+- **型安全**: 各ルートで適切な型定義
+- **分散開発**: チームが独立してAPI開発可能
+- **保守性**: 機能ごとに分離された責務
+
+#### HTTP メソッドベースの関数エクスポート
 
 ```ts
-export async function GET(request: Request) {}
-export async function POST(request: Request) {}
-export async function PUT(request: Request) {}
-export async function DELETE(request: Request) {}
+// 各HTTPメソッドが独立した関数として定義される
+export async function GET(request: NextRequest) {
+  // データ取得ロジック
+}
+
+export async function POST(request: NextRequest) {
+  // データ作成ロジック
+}
+
+export async function PUT(request: NextRequest) {
+  // データ更新ロジック
+}
+
+export async function DELETE(request: NextRequest) {
+  // データ削除ロジック
+}
+
+export async function PATCH(request: NextRequest) {
+  // 部分的データ更新ロジック
+}
+
+export async function HEAD(request: NextRequest) {
+  // メタデータのみ取得
+}
+
+export async function OPTIONS(request: NextRequest) {
+  // CORS プリフライトレスポンス
+}
 ```
 
-## 🛠️ ハンズオン
+従来のフレームワークとの比較：
 
-### 1. Microsoft API クライアントの作成
-
-`src/lib/azureFetch.ts`:
-
+**Express.js (従来型)**:
 ```ts
-const AZURE_API_BASE = 'https://techcommunity.microsoft.com/plugins/custom/microsoft/o365/api-v2';
+app.get('/api/users/:id', (req, res) => {
+  // ルーティングとハンドラーが分離
+});
+app.post('/api/users/:id', (req, res) => {
+  // 同じパスでもメソッドごとに分離
+});
+```
 
-export interface AzureUpdate {
+**Next.js Route Handlers (現代型)**:
+```ts
+// 1つのファイルで全メソッドを管理
+// TypeScript の恩恵を最大限活用
+export async function GET(request: NextRequest, 
+  { params }: { params: { id: string } }
+) {
+  // 型安全性とエディタサポート
+}
+```
+
+### Microsoft Azure 統合アーキテクチャ
+
+#### エンタープライズ API との連携パターン
+
+Azure UpdateSnap では、Microsoft の公式 API との統合が重要な要素です。エンタープライズ級のAPI統合には以下の考慮点があります：
+
+**1. API契約の安定性**
+```ts
+// Microsoft API のエンドポイント設計
+const API_ENDPOINTS = {
+  // v2 API：安定したバージョン
+  releaseCommunications: 'https://techcommunity.microsoft.com/plugins/custom/microsoft/o365/api-v2/releasecommunications',
+  
+  // フォールバック用 v1
+  fallback: 'https://techcommunity.microsoft.com/plugins/custom/microsoft/o365/api/releasecommunications',
+} as const;
+```
+
+**2. レスポンス形式の変化への対応**
+```ts
+// 型安全なレスポンス処理
+interface MicrosoftApiResponse {
   id: number;
   guid: string;
   title: string;
   description: string;
   impactDescription?: string;
   publicDisclosureDate: string;
-  tags: string[];
-  detailsUrl: string;
+  tags?: string[];
+  // Microsoft が将来追加する可能性のあるフィールド
+  [key: string]: unknown;
+}
+```
+
+**3. 認証とレート制限**
+```ts
+// Microsoft API の利用制限に対応
+const API_CONFIG = {
+  maxRetries: 3,
+  baseDelay: 1000,
+  maxDelay: 5000,
+  timeout: 10000,
+} as const;
+```
+
+#### レート制限システムの詳細設計
+
+現代的なWebアプリケーションでは、レート制限は必須の機能です。特にエンタープライズ環境では、以下の観点が重要：
+
+**1. 分散システムでのレート制限**
+```ts
+// Redis ベースの分散レート制限
+class DistributedRateLimiter {
+  private redis: Redis;
+  
+  constructor(redis: Redis) {
+    this.redis = redis;
+  }
+  
+  async checkLimit(key: string, limit: number, window: number): Promise<{
+    allowed: boolean;
+    remaining: number;
+    resetTime: number;
+  }> {
+    const pipeline = this.redis.pipeline();
+    const now = Date.now();
+    const windowStart = now - window;
+    
+    // スライディングウィンドウアルゴリズム
+    pipeline.zremrangebyscore(key, 0, windowStart);
+    pipeline.zadd(key, now, now);
+    pipeline.zcard(key);
+    pipeline.expire(key, Math.ceil(window / 1000));
+    
+    const results = await pipeline.exec();
+    const count = results?.[2]?.[1] as number;
+    
+    return {
+      allowed: count <= limit,
+      remaining: Math.max(0, limit - count),
+      resetTime: now + window,
+    };
+  }
+}
+```
+
+**2. トークンバケットアルゴリズム**
+```ts
+// より柔軟なレート制限
+class TokenBucketRateLimiter {
+  private buckets = new Map<string, TokenBucket>();
+  
+  check(identifier: string, capacity: number, refillRate: number): boolean {
+    let bucket = this.buckets.get(identifier);
+    
+    if (!bucket) {
+      bucket = new TokenBucket(capacity, refillRate);
+      this.buckets.set(identifier, bucket);
+    }
+    
+    return bucket.consume();
+  }
+}
+
+class TokenBucket {
+  private tokens: number;
+  private lastRefill: number;
+  
+  constructor(
+    private capacity: number,
+    private refillRate: number
+  ) {
+    this.tokens = capacity;
+    this.lastRefill = Date.now();
+  }
+  
+  consume(): boolean {
+    this.refill();
+    
+    if (this.tokens >= 1) {
+      this.tokens -= 1;
+      return true;
+    }
+    
+    return false;
+  }
+  
+  private refill() {
+    const now = Date.now();
+    const elapsed = now - this.lastRefill;
+    const tokensToAdd = (elapsed / 1000) * this.refillRate;
+    
+    this.tokens = Math.min(this.capacity, this.tokens + tokensToAdd);
+    this.lastRefill = now;
+  }
+}
+```
+
+## 🛠️ 実装：Azure UpdateSnap の API レイヤー
+
+### 1. エンタープライズグレード Microsoft API クライアント
+
+`src/lib/azureFetch.ts`:
+
+```ts
+// 企業級の設定管理
+const API_CONFIG = {
+  baseUrl: 'https://techcommunity.microsoft.com/plugins/custom/microsoft/o365/api-v2',
+  timeout: 10000,
+  maxRetries: 3,
+  retryDelay: 1000,
+} as const;
+
+// 厳密な型定義
+export interface AzureUpdate {
+  readonly id: number;
+  readonly guid: string;
+  readonly title: string;
+  readonly description: string;
+  readonly impactDescription?: string;
+  readonly publicDisclosureDate: string;
+  readonly tags: readonly string[];
+  readonly detailsUrl: string;
+  readonly fetchedAt: string;
+}
+
+// エラー型の定義
+export class AzureApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status?: number,
+    public readonly endpoint?: string
+  ) {
+    super(message);
+    this.name = 'AzureApiError';
+  }
+}
+
+// 指数バックオフによるリトライ機能
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  retries = API_CONFIG.maxRetries
+): Promise<Response> {
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: AbortSignal.timeout(API_CONFIG.timeout),
+    });
+    
+    if (!response.ok && retries > 0) {
+      // 5xx エラーの場合のみリトライ
+      if (response.status >= 500) {
+        await new Promise(resolve => 
+          setTimeout(resolve, API_CONFIG.retryDelay * (API_CONFIG.maxRetries - retries + 1))
+        );
+        return fetchWithRetry(url, options, retries - 1);
+      }
+    }
+    
+    return response;
+  } catch (error) {
+    if (retries > 0 && (error as Error).name !== 'AbortError') {
+      await new Promise(resolve => 
+        setTimeout(resolve, API_CONFIG.retryDelay * (API_CONFIG.maxRetries - retries + 1))
+      );
+      return fetchWithRetry(url, options, retries - 1);
+    }
+    throw error;
+  }
 }
 
 export async function fetchAzureUpdate(id: string): Promise<AzureUpdate | null> {
   try {
-    // 数値 ID の場合
+    let endpoint: string;
+    
     if (/^\d+$/.test(id)) {
-      const response = await fetch(
-        `${AZURE_API_BASE}/releasecommunications/${id}`,
-        {
-          headers: {
-            'Accept': 'application/json',
-          },
-          next: {
-            revalidate: 3600, // 1時間キャッシュ
-          },
-        }
-      );
-
-      if (!response.ok) {
-        if (response.status === 404) {
-          return null;
-        }
-        throw new Error(`API error: ${response.status}`);
-      }
-
-      const data = await response.json();
-      
-      return {
-        id: data.id,
-        guid: data.guid,
-        title: data.title,
-        description: data.description,
-        impactDescription: data.impactDescription,
-        publicDisclosureDate: data.publicDisclosureDate,
-        tags: data.tags || [],
-        detailsUrl: `https://admin.microsoft.com/adminportal/home#/MessageCenter/${data.guid}`,
-      };
+      endpoint = `${API_CONFIG.baseUrl}/releasecommunications/${id}`;
+    } else if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      endpoint = `${API_CONFIG.baseUrl}/releasecommunications/guid/${id}`;
+    } else {
+      throw new AzureApiError(`Invalid ID format: ${id}`);
     }
     
-    // GUID の場合は別の処理（簡略化のため省略）
-    return null;
+    const response = await fetchWithRetry(endpoint, {
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'Azure-UpdateSnap/1.0',
+      },
+      next: {
+        revalidate: 3600,
+      },
+    });
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        return null;
+      }
+      throw new AzureApiError(
+        `API request failed: ${response.statusText}`,
+        response.status,
+        endpoint
+      );
+    }
+
+    const data = await response.json();
+    
+    return {
+      id: data.id,
+      guid: data.guid,
+      title: data.title || 'Untitled Update',
+      description: data.description || '',
+      impactDescription: data.impactDescription,
+      publicDisclosureDate: data.publicDisclosureDate,
+      tags: Object.freeze(data.tags || []),
+      detailsUrl: `https://admin.microsoft.com/adminportal/home#/MessageCenter/${data.guid}`,
+      fetchedAt: new Date().toISOString(),
+    };
+    
   } catch (error) {
-    console.error('Failed to fetch Azure update:', error);
-    throw error;
+    if (error instanceof AzureApiError) {
+      throw error;
+    }
+    
+    console.error('Unexpected error fetching Azure update:', error);
+    throw new AzureApiError('Failed to fetch Azure update');
   }
 }
 ```
@@ -355,7 +692,74 @@ export function useAzureUpdate(id: string) {
 }
 ```
 
-## 📚 重要な概念
+## 📚 現代的 API 開発の核心概念
+
+### エンタープライズレベルのセキュリティ考慮
+
+#### 1. 入力検証とサニタイゼーション
+
+```ts
+import { z } from 'zod';
+
+// 厳密なスキーマ定義
+const AzureUpdateIdSchema = z.union([
+  z.string().regex(/^\d+$/, 'Must be numeric ID'),
+  z.string().uuid('Must be valid GUID'),
+]);
+
+export async function validateRequest<T>(
+  schema: z.ZodSchema<T>,
+  data: unknown
+): Promise<T> {
+  try {
+    return schema.parse(data);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      throw new ValidationError('Invalid input', error.errors);
+    }
+    throw error;
+  }
+}
+```
+
+#### 2. セキュリティヘッダーの実装
+
+```ts
+function setSecurityHeaders(response: NextResponse): NextResponse {
+  response.headers.set('X-Content-Type-Options', 'nosniff');
+  response.headers.set('X-Frame-Options', 'DENY');
+  response.headers.set('X-XSS-Protection', '1; mode=block');
+  response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  response.headers.set(
+    'Content-Security-Policy',
+    \"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'\"\n  );
+  
+  return response;
+}
+```
+
+#### 3. CORS の適切な設定
+
+```ts
+export async function OPTIONS(request: NextRequest) {
+  const origin = request.headers.get('origin');
+  const allowedOrigins = [
+    'https://admin.microsoft.com',
+    'https://portal.azure.com',
+    process.env.NEXT_PUBLIC_BASE_URL,
+  ].filter(Boolean);
+  
+  const corsHeaders: Record<string, string> = {
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
+    'Access-Control-Max-Age': '86400',
+  };
+  
+  if (origin && allowedOrigins.includes(origin)) {
+    corsHeaders['Access-Control-Allow-Origin'] = origin;\n  }
+  
+  return new Response(null, {\n    status: 200,\n    headers: corsHeaders,\n  });\n}
+```
 
 ### Route Handlers の設計思想と Request/Response の仕組み
 
@@ -783,51 +1187,255 @@ export async function GET(request: NextRequest) {
 }
 ```
 
-## ✅ 確認ポイント
+### Azure UpdateSnap での実装戦略
 
-- [ ] `/api/refresh?id=123456` が正しく動作する
-- [ ] レート制限が機能する
-- [ ] エラーハンドリングが適切
-- [ ] レスポンスヘッダーが正しく設定される
+Azure UpdateSnap では、以下の戦略で API レイヤーを設計しています：
 
-## 🏃 演習問題
-
-1. **バリデーションの強化**: Zod を使ってリクエストボディの検証を実装
-2. **キャッシュヘッダーの改善**: 条件に応じて異なるキャッシュ戦略を適用
-3. **Webhook エンドポイント**: 更新通知を受け取る Webhook エンドポイントを作成
-
-### 演習 1 の解答例
+1. **多層防御**: クライアント側 → Edge Middleware → API Handler → External API
+2. **段階的フォールバック**: API v2 → API v1 → HTML Scraping → Cache
+3. **監視と可観測性**: メトリクス、ログ、アラート
+4. **スケーラビリティ**: 水平スケール対応、ステートレス設計
 
 ```ts
-import { z } from 'zod';
-
-const cacheUrlSchema = z.object({
-  url: z.string().url(),
-});
-
-export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
-    const validated = cacheUrlSchema.parse(body);
-    // ... 残りの処理
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      return NextResponse.json(
-        { error: 'Invalid input', details: error.errors },
-        { status: 400 }
-      );
+// 包括的な API アーキテクチャ
+export class AzureUpdateApiService {
+  private rateLimiter: RateLimiter;
+  private cache: CacheService;
+  private metrics: MetricsService;
+  
+  constructor(options: ApiServiceOptions) {
+    this.rateLimiter = new RateLimiter(options.rateLimit);
+    this.cache = new CacheService(options.cache);
+    this.metrics = new MetricsService(options.metrics);
+  }
+  
+  async getUpdate(id: string, request: NextRequest): Promise<AzureUpdate | null> {
+    const startTime = Date.now();
+    
+    try {
+      // 1. レート制限チェック
+      await this.rateLimiter.checkLimit(this.getClientId(request));
+      
+      // 2. キャッシュ確認
+      const cached = await this.cache.get(id);
+      if (cached) {
+        this.metrics.recordCacheHit(id);
+        return cached;
+      }
+      
+      // 3. 外部API呼び出し
+      const update = await this.fetchFromExternalApi(id);
+      
+      // 4. キャッシュに保存
+      if (update) {
+        await this.cache.set(id, update);
+      }
+      
+      this.metrics.recordApiCall(id, Date.now() - startTime);
+      return update;
+      
+    } catch (error) {
+      this.metrics.recordError(id, error);
+      throw error;
     }
-    // ... その他のエラー処理
   }
 }
 ```
 
-## 🔗 参考リンク
+## ✅ 実装確認チェックリスト
 
-- [Route Handlers](https://nextjs.org/docs/app/building-your-application/routing/route-handlers)
-- [Request/Response APIs](https://nextjs.org/docs/app/api-reference/functions/next-request)
-- [Edge Runtime](https://nextjs.org/docs/app/api-reference/edge)
+### 基本機能
+- [ ] Microsoft API との正常な通信が確立されている
+- [ ] エラーハンドリングが適切に実装されている
+- [ ] 型安全性が保たれている
+- [ ] レスポンス時間が 2 秒以内
+
+### セキュリティ
+- [ ] 入力検証が実装されている
+- [ ] セキュリティヘッダーが設定されている
+- [ ] CORS が適切に設定されている
+- [ ] レート制限が機能している
+
+### パフォーマンス
+- [ ] キャッシュヘッダーが適切に設定されている
+- [ ] コネクションプールが使用されている
+- [ ] タイムアウトが設定されている
+- [ ] リトライロジックが実装されている
+
+### 監視・運用
+- [ ] ログが適切に出力されている
+- [ ] メトリクスが収集されている
+- [ ] ヘルスチェックエンドポイントがある
+- [ ] エラー率の監視ができている
+
+## 🏃 実践的演習問題
+
+### 演習 1: 高度なバリデーション実装
+Azure の更新データに特化したバリデーションシステムを実装してください。
+
+```ts
+import { z } from 'zod';
+
+const AzureUpdateRequestSchema = z.object({
+  id: z.union([
+    z.string().regex(/^\d+$/, 'Must be numeric ID'),
+    z.string().uuid('Must be valid GUID')
+  ]),
+  includeMetadata: z.boolean().optional().default(false),
+  format: z.enum(['json', 'xml', 'text']).optional().default('json'),
+  locale: z.string().regex(/^[a-z]{2}-[A-Z]{2}$/).optional().default('en-US'),
+});
+
+// 実装例
+export async function GET(request: NextRequest) {
+  try {
+    const searchParams = request.nextUrl.searchParams;
+    const validated = AzureUpdateRequestSchema.parse({
+      id: searchParams.get('id'),
+      includeMetadata: searchParams.get('metadata') === 'true',
+      format: searchParams.get('format'),
+      locale: searchParams.get('locale'),
+    });
+    
+    // 検証されたデータで処理を続行
+    const update = await fetchAzureUpdate(validated.id, validated);
+    
+    return NextResponse.json(update);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        {
+          error: 'Validation failed',
+          details: error.errors.map(err => ({
+            field: err.path.join('.'),
+            message: err.message,
+            received: err.received,
+          })),
+        },
+        { status: 400 }
+      );
+    }
+    
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+```
+
+### 演習 2: 動的キャッシュ戦略
+コンテンツの重要度や更新頻度に応じて異なるキャッシュ戦略を適用する実装。
+
+```ts
+function getCacheStrategy(update: AzureUpdate): {
+  ttl: number;
+  cacheControl: string;
+} {
+  const isHighPriority = update.tags.some(tag => 
+    ['Security', 'Critical', 'Breaking Change'].includes(tag)
+  );
+  
+  const isRecent = new Date(update.publicDisclosureDate) > 
+    new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // 7日以内
+  
+  if (isHighPriority && isRecent) {
+    return {
+      ttl: 300, // 5分
+      cacheControl: 'public, max-age=300, must-revalidate',
+    };
+  } else if (isRecent) {
+    return {
+      ttl: 1800, // 30分
+      cacheControl: 'public, max-age=1800, stale-while-revalidate=3600',
+    };
+  } else {
+    return {
+      ttl: 86400, // 24時間
+      cacheControl: 'public, max-age=86400, stale-while-revalidate=604800',
+    };
+  }
+}
+```
+
+### 演習 3: Webhook 受信エンドポイント
+Microsoft からのリアルタイム更新通知を受信する secure Webhook。
+
+```ts
+import crypto from 'crypto';
+
+export async function POST(request: NextRequest) {
+  try {
+    // Webhook 署名の検証
+    const signature = request.headers.get('x-ms-signature-256');
+    const body = await request.text();
+    
+    if (!verifyWebhookSignature(signature, body)) {
+      return NextResponse.json(
+        { error: 'Invalid signature' },
+        { status: 401 }
+      );
+    }
+    
+    const payload = JSON.parse(body);
+    
+    // 更新タイプに応じた処理
+    switch (payload.eventType) {
+      case 'MessageCenter.NewMessage':
+        await handleNewMessage(payload.data);
+        break;
+      case 'MessageCenter.UpdateMessage':
+        await handleUpdateMessage(payload.data);
+        break;
+      default:
+        console.log('Unknown event type:', payload.eventType);
+    }
+    
+    return NextResponse.json({ status: 'processed' });
+    
+  } catch (error) {
+    console.error('Webhook processing error:', error);
+    return NextResponse.json(
+      { error: 'Processing failed' },
+      { status: 500 }
+    );
+  }
+}
+
+function verifyWebhookSignature(signature: string | null, body: string): boolean {
+  if (!signature || !process.env.WEBHOOK_SECRET) {
+    return false;
+  }
+  
+  const expectedSignature = crypto
+    .createHmac('sha256', process.env.WEBHOOK_SECRET)
+    .update(body)
+    .digest('hex');
+    
+  return crypto.timingSafeEqual(
+    Buffer.from(signature.replace('sha256=', '')),
+    Buffer.from(expectedSignature)
+  );
+}
+```
+
+## 🔗 詳細リソース
+
+### 公式ドキュメント
+- [Next.js Route Handlers](https://nextjs.org/docs/app/building-your-application/routing/route-handlers)
+- [Edge Runtime API](https://nextjs.org/docs/app/api-reference/edge)
+- [Microsoft Graph API](https://docs.microsoft.com/en-us/graph/)
+
+### 学習リソース
+- [RESTful API Design Best Practices](https://restfulapi.net/)
+- [HTTP Status Codes Reference](https://httpstatuses.com/)
+- [Web Security Fundamentals](https://web.dev/security/)
+
+### Azure UpdateSnap 関連
+- [Project Architecture](../../CLAUDE.md)
+- [API Testing Guide](../testing/api-testing.md)
+- [Deployment Checklist](../deployment/checklist.md)
 
 ---
 
-準備ができたら、[Step 4: データフェッチングとキャッシング](../step-04-data-fetching) に進みましょう！
+**準備完了！** 強固な API 基盤が構築できました。次は [Step 4: データフェッチングとキャッシング](../step-04-data-fetching) でデータレイヤーを実装します。
